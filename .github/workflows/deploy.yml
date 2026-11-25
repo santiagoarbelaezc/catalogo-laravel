@@ -33,11 +33,9 @@ jobs:
 
       - name: 🔍 Validar sintaxis PHP
         run: |
-          find app config routes -name "*.php" | xargs -P4 -I{} php -l {} | grep -v "No syntax errors" | tee /tmp/php_errors.txt
-          if [ -s /tmp/php_errors.txt ]; then
-            echo "❌ Errores de sintaxis PHP detectados"
-            exit 1
-          fi
+          for file in $(find app config routes database -name "*.php"); do
+            php -l "$file" > /dev/null
+          done
           echo "✅ Sintaxis PHP OK"
 
       # ─────────────────────────────────────────────
@@ -48,21 +46,21 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
-          # Escribir clave privada desde secrets
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-          # Registrar host conocido (evita prompt interactivo)
-          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       # ─────────────────────────────────────────────
-      # 4. Sincronizar archivos con rsync
-      #    Se excluyen: .env, vendor/, storage/, bootstrap/cache/
-      #    para no sobreescribir datos del servidor
+      # 4. Asegurar carpeta destino y sincronizar archivos
+      #    Se excluyen .env, vendor/, storage/, bootstrap/cache/
+      #    para no sobreescribir datos ni logs del servidor
       # ─────────────────────────────────────────────
       - name: 📤 Sincronizar archivos al servidor
         run: |
+          ssh -p ${{ secrets.SSH_PORT }} -i ~/.ssh/id_ed25519 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}"
+
           rsync -avz --delete \
             --exclude='.git/' \
             --exclude='.github/' \
@@ -81,7 +79,7 @@ jobs:
 
       # ─────────────────────────────────────────────
       # 5. Post-deploy en el servidor:
-      #    composer install → config:cache → route:cache → migrate
+      #    directorios → composer install → caches → migrate
       # ─────────────────────────────────────────────
       - name: ⚙️ Comandos post-deploy en servidor
         uses: appleboy/ssh-action@v1.0.3
@@ -95,34 +93,86 @@ jobs:
             set -e
             cd ${{ env.DEPLOY_PATH }}
 
+            # Asegurar estructura de directorios de escritura
+            mkdir -p storage/logs \
+                     storage/framework/cache/data \
+                     storage/framework/sessions \
+                     storage/framework/views \
+                     bootstrap/cache
+
+            # Verificar existencia de .env en el servidor
+            if [ ! -f .env ]; then
+              echo "❌ Error: No existe ${{ env.DEPLOY_PATH }}/.env en el servidor."
+              echo "Créalo una sola vez con tus credenciales de producción antes de desplegar."
+              exit 1
+            fi
+
+            # Detectar binario PHP >= 8.2 en Hostinger
+            PHP_BIN="php"
+            if ! $PHP_BIN -r 'exit(version_compare(PHP_VERSION, "8.2.0", ">=") ? 0 : 1);' 2>/dev/null; then
+              for candidate in /opt/alt/php83/usr/bin/php /opt/alt/php82/usr/bin/php /usr/bin/php83 /usr/bin/php82; do
+                if [ -x "$candidate" ]; then
+                  PHP_BIN="$candidate"
+                  break
+                fi
+              done
+            fi
+            echo "🐘 Usando PHP: $($PHP_BIN -v | head -n 1)"
+
+            # Detectar Composer
+            COMPOSER_BIN=$(command -v composer || true)
+            if [ -z "$COMPOSER_BIN" ]; then
+              for c in /usr/local/bin/composer /usr/bin/composer ~/bin/composer; do
+                if [ -x "$c" ]; then
+                  COMPOSER_BIN="$c"
+                  break
+                fi
+              done
+            fi
+
             echo "📦 Instalando dependencias Composer (producción)..."
-            composer install --no-dev --optimize-autoloader --no-interaction
+            if [ -n "$COMPOSER_BIN" ]; then
+              $PHP_BIN $COMPOSER_BIN install --no-dev --optimize-autoloader --no-interaction
+            elif [ -f composer.phar ]; then
+              $PHP_BIN composer.phar install --no-dev --optimize-autoloader --no-interaction
+            else
+              echo "⬇️ Descargando composer.phar..."
+              curl -sS https://getcomposer.org/installer | $PHP_BIN
+              $PHP_BIN composer.phar install --no-dev --optimize-autoloader --no-interaction
+            fi
 
             echo "⚡ Cacheando configuración, rutas y vistas..."
-            php artisan config:clear
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache
+            $PHP_BIN artisan config:clear
+            $PHP_BIN artisan config:cache
+            $PHP_BIN artisan route:cache
+            $PHP_BIN artisan view:cache
 
             echo "🗄️ Ejecutando migraciones pendientes..."
-            php artisan migrate --force
+            $PHP_BIN artisan migrate --force
 
             echo "🔒 Ajustando permisos..."
             chmod -R 775 storage bootstrap/cache
-            chmod 644 .env 2>/dev/null || true
+            chmod 644 .env
 
-            echo "✅ Deploy completado exitosamente"
+            echo "🧪 Verificando arranque de Laravel..."
+            $PHP_BIN artisan --version
+
+            echo "✅ Deploy del backend completado exitosamente"
 
       # ─────────────────────────────────────────────
-      # 6. Verificar que la API responde
+      # 6. Verificar endpoint público (aviso si aún no se despliega el frontend)
       # ─────────────────────────────────────────────
       - name: 🌐 Health check de la API
         run: |
-          sleep 5  # dar tiempo al servidor para reiniciar procesos
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://catalogoplaxtilineas.com/api/health)
+          sleep 3
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://catalogoplaxtilineas.com/api/health || echo "000")
           if [ "$RESPONSE" = "200" ]; then
-            echo "✅ API responde correctamente (HTTP $RESPONSE)"
+            echo "✅ API pública responde correctamente (HTTP $RESPONSE)"
           else
-            echo "⚠️ API retornó HTTP $RESPONSE — revisar logs en el servidor"
-            exit 1
+            echo "⚠️ La API pública devolvió HTTP $RESPONSE."
+            echo "Si aún no has desplegado el repo Frontend (laravel-index.php y .htaccess), despliégalo ahora para habilitar /api/*."
           fi
+
+      - name: 🧹 Limpiar clave SSH
+        if: always()
+        run: rm -rf ~/.ssh
