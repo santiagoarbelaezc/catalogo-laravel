@@ -139,6 +139,11 @@ jobs:
               $PHP_BIN composer.phar install --no-dev --optimize-autoloader --no-interaction
             fi
 
+            echo "⚡ Generando APP_KEY si está vacío..."
+            if grep -qE '^APP_KEY=\s*$' .env; then
+              $PHP_BIN artisan key:generate --force
+            fi
+
             echo "⚡ Cacheando configuración, rutas y vistas..."
             $PHP_BIN artisan config:clear
             $PHP_BIN artisan config:cache
