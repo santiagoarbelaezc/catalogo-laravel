@@ -11,7 +11,7 @@ env:
 
 jobs:
   deploy:
-    name: Deploy to Hostinger (SSH + rsync)
+    name: Deploy to Hostinger (SSH Password + rsync)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -39,17 +39,14 @@ jobs:
           echo "✅ Sintaxis PHP OK"
 
       # ─────────────────────────────────────────────
-      # 3. Configurar SSH
+      # 3. Instalar sshpass y registrar host conocido
       # ─────────────────────────────────────────────
-      - name: 🔑 Configurar SSH
+      - name: 🔑 Configurar acceso SSH
         run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-
-          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-          printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          ssh-keyscan -p "${{ secrets.SSH_PORT }}" -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
       # ─────────────────────────────────────────────
@@ -58,10 +55,12 @@ jobs:
       #    para no sobreescribir datos ni logs del servidor
       # ─────────────────────────────────────────────
       - name: 📤 Sincronizar archivos al servidor
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
-          ssh -p ${{ secrets.SSH_PORT }} -i ~/.ssh/id_ed25519 ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "mkdir -p ${{ env.DEPLOY_PATH }}"
+          sshpass -e ssh -p "${{ secrets.SSH_PORT }}" "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "mkdir -p ${{ env.DEPLOY_PATH }}"
 
-          rsync -avz --delete \
+          sshpass -e rsync -avz --delete \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.env' \
@@ -73,9 +72,9 @@ jobs:
             --exclude='bootstrap/cache/' \
             --exclude='*.log' \
             --exclude='node_modules/' \
-            -e "ssh -p ${{ secrets.SSH_PORT }} -i ~/.ssh/id_ed25519" \
+            -e "ssh -p ${{ secrets.SSH_PORT }}" \
             ./ \
-            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ env.DEPLOY_PATH }}/
+            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ env.DEPLOY_PATH }}/"
 
       # ─────────────────────────────────────────────
       # 5. Post-deploy en el servidor:
@@ -87,8 +86,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+          password: ${{ secrets.SSH_PASSWORD }}
           script: |
             set -e
             cd ${{ env.DEPLOY_PATH }}
@@ -173,6 +171,6 @@ jobs:
             echo "Si aún no has desplegado el repo Frontend (laravel-index.php y .htaccess), despliégalo ahora para habilitar /api/*."
           fi
 
-      - name: 🧹 Limpiar clave SSH
+      - name: 🧹 Limpiar configuración SSH
         if: always()
         run: rm -rf ~/.ssh
