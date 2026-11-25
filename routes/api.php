@@ -23,7 +23,7 @@ Route::middleware('jwt.auth')->group(function () {
     Route::get('/auth/profile', [AuthController::class, 'profile']);
 });
 
-Route::middleware('jwt.auth:admin')->group(function () {
+Route::middleware(['jwt.auth:admin', 'throttle:admin'])->group(function () {
     Route::post('/auth/register', [AuthController::class, 'register']);
 
     // Productos (admin)
@@ -45,19 +45,22 @@ Route::middleware('jwt.auth:admin')->group(function () {
     Route::post('/ia/generar-sku', [AiController::class, 'generateSku']);
 });
 
-// Productos públicos
-Route::get('/productos', [ProductController::class, 'index']);
-Route::get('/productos/slug/{slug}', [ProductController::class, 'showBySlug']);
-Route::get('/productos/categoria/{category}', [ProductController::class, 'byCategory'])->where('category', '.*');
-Route::get('/productos/{id}', [ProductController::class, 'show'])->whereNumber('id');
+// Productos y Categorías públicos (protegidos con caché + rate limit)
+Route::middleware('throttle:catalog')->group(function () {
+    Route::get('/productos', [ProductController::class, 'index']);
+    Route::get('/productos/slug/{slug}', [ProductController::class, 'showBySlug']);
+    Route::get('/productos/categoria/{category}', [ProductController::class, 'byCategory'])->where('category', '.*');
+    Route::get('/productos/{id}', [ProductController::class, 'show'])->whereNumber('id');
 
-// Categorías públicas
-Route::get('/categorias', [CategoryController::class, 'index']);
-Route::get('/categorias/{id}/subcategorias', [CategoryController::class, 'subcategories'])->whereNumber('id');
+    Route::get('/categorias', [CategoryController::class, 'index']);
+    Route::get('/categorias/{id}/subcategorias', [CategoryController::class, 'subcategories'])->whereNumber('id');
+});
 
 // Inventario en tiempo real
-Route::get('/inventario/cambios', [InventoryController::class, 'changes']);
-Route::get('/inventario/stream', [InventoryController::class, 'stream']);
+Route::middleware('throttle:inventory')->group(function () {
+    Route::get('/inventario/cambios', [InventoryController::class, 'changes']);
+    Route::get('/inventario/stream', [InventoryController::class, 'stream']);
+});
 
 // Integraciones inventario (token especial)
 Route::middleware('inventory.token')->group(function () {

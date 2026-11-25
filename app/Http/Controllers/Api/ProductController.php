@@ -8,11 +8,13 @@ use App\Models\Product;
 use App\Models\ProductColor;
 use App\Models\ProductImage;
 use App\Models\ProductVariant;
+use App\Services\CatalogCacheService;
 use App\Services\CloudinaryService;
 use App\Services\NotificadorPlaxtilineasService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -22,7 +24,8 @@ class ProductController extends Controller
 {
     public function __construct(
         private CloudinaryService $cloudinary,
-        private NotificadorPlaxtilineasService $notificador
+        private NotificadorPlaxtilineasService $notificador,
+        private CatalogCacheService $catalogCache
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -30,109 +33,125 @@ class ProductController extends Controller
         $categoryParam = $request->query('categoria') ?? $request->query('category') ?? $request->query('category_id');
         $brandParam = $request->query('brand') ?? $request->query('marca');
 
-        $query = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])
-            ->orderByDesc('id');
+        $suffix = (empty($categoryParam) && empty($brandParam))
+            ? 'products_all'
+            : 'products_filter_' . md5(json_encode([(string) $categoryParam, (string) $brandParam]));
 
-        if (!empty($categoryParam)) {
-            if (is_numeric($categoryParam)) {
-                $query->where(function ($q) use ($categoryParam) {
-                    $q->where('category_id', $categoryParam)
-                      ->orWhere('category', $categoryParam);
-                });
-            } else {
-                $query->where(function ($q) use ($categoryParam) {
-                    $q->where('category', $categoryParam)
-                      ->orWhereHas('categoryRelation', function ($cq) use ($categoryParam) {
-                          $cq->where('name', $categoryParam)->orWhere('brand', $categoryParam);
-                      });
+        return $this->catalogCache->respond($request, $suffix, function () use ($categoryParam, $brandParam) {
+            $query = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])
+                ->orderByDesc('id');
+
+            if (!empty($categoryParam)) {
+                if (is_numeric($categoryParam)) {
+                    $query->where(function ($q) use ($categoryParam) {
+                        $q->where('category_id', $categoryParam)
+                          ->orWhere('category', $categoryParam);
+                    });
+                } else {
+                    $query->where(function ($q) use ($categoryParam) {
+                        $q->where('category', $categoryParam)
+                          ->orWhereHas('categoryRelation', function ($cq) use ($categoryParam) {
+                              $cq->where('name', $categoryParam)->orWhere('brand', $categoryParam);
+                          });
+                    });
+                }
+            }
+
+            if (!empty($brandParam)) {
+                $query->where(function ($q) use ($brandParam) {
+                    $q->where('marca', $brandParam)
+                      ->orWhereHas('categoryRelation', fn ($cq) => $cq->where('brand', $brandParam));
                 });
             }
-        }
 
-        if (!empty($brandParam)) {
-            $query->where(function ($q) use ($brandParam) {
-                $q->where('marca', $brandParam)
-                  ->orWhereHas('categoryRelation', fn ($cq) => $cq->where('brand', $brandParam));
-            });
-        }
+            $products = $query->get()->map(fn (Product $p) => $this->formatProduct($p))->values()->all();
 
-        $products = $query->get()->map(fn (Product $p) => $this->formatProduct($p));
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Productos obtenidos',
-            'data' => $products,
-        ]);
+            return [
+                'success' => true,
+                'message' => 'Productos obtenidos',
+                'data' => $products,
+            ];
+        });
     }
 
-    public function byCategory(string $category): JsonResponse
+    public function byCategory(Request $request, string $category): JsonResponse
     {
         $category = trim(urldecode($category));
         if ($category === '') {
             return response()->json(['success' => false, 'message' => 'La categoría es requerida'], 400);
         }
 
-        $query = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])
-            ->orderByDesc('id');
+        $suffix = 'products_cat_' . sha1(mb_strtolower($category));
 
-        if (is_numeric($category)) {
-            $query->where(function ($q) use ($category) {
-                $q->where('category_id', $category)->orWhere('category', $category);
-            });
-        } else {
-            $query->where(function ($q) use ($category) {
-                $q->where('category', $category)
-                  ->orWhereHas('categoryRelation', fn ($cq) => $cq->where('name', $category)->orWhere('brand', $category));
-            });
-        }
+        return $this->catalogCache->respond($request, $suffix, function () use ($category) {
+            $query = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])
+                ->orderByDesc('id');
 
-        $products = $query->get()->map(fn (Product $p) => $this->formatProduct($p));
+            if (is_numeric($category)) {
+                $query->where(function ($q) use ($category) {
+                    $q->where('category_id', $category)->orWhere('category', $category);
+                });
+            } else {
+                $query->where(function ($q) use ($category) {
+                    $q->where('category', $category)
+                      ->orWhereHas('categoryRelation', fn ($cq) => $cq->where('name', $category)->orWhere('brand', $category));
+                });
+            }
 
-        return response()->json([
-            'success' => true,
-            'message' => "Productos de categoría {$category} obtenidos",
-            'data' => $products,
-        ]);
+            $products = $query->get()->map(fn (Product $p) => $this->formatProduct($p))->values()->all();
+
+            return [
+                'success' => true,
+                'message' => "Productos de categoría {$category} obtenidos",
+                'data' => $products,
+            ];
+        });
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Request $request, int $id): JsonResponse
     {
         if ($id <= 0) {
             return response()->json(['success' => false, 'message' => 'El ID debe ser un número entero positivo'], 400);
         }
 
-        $product = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])->find($id);
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Producto no encontrado'], 404);
-        }
+        return $this->catalogCache->respond($request, "products_id_{$id}", function () use ($id) {
+            $product = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])->find($id);
+            if (!$product) {
+                return null;
+            }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Producto encontrado',
-            'data' => $this->formatProduct($product),
-        ]);
+            return [
+                'success' => true,
+                'message' => 'Producto encontrado',
+                'data' => $this->formatProduct($product),
+            ];
+        }, 'Producto no encontrado');
     }
 
-    public function showBySlug(string $slug): JsonResponse
+    public function showBySlug(Request $request, string $slug): JsonResponse
     {
         $slug = trim($slug);
         if ($slug === '') {
             return response()->json(['success' => false, 'message' => 'El slug no puede estar vacío'], 400);
         }
 
-        $product = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])
-            ->where('slug', $slug)
-            ->first();
+        $suffix = 'products_slug_' . sha1($slug);
 
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Producto no encontrado'], 404);
-        }
+        return $this->catalogCache->respond($request, $suffix, function () use ($slug) {
+            $product = Product::with(['categoryRelation', 'subcategory', 'images', 'colors', 'variants'])
+                ->where('slug', $slug)
+                ->first();
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Producto encontrado',
-            'data' => $this->formatProduct($product),
-        ]);
+            if (!$product) {
+                return null;
+            }
+
+            return [
+                'success' => true,
+                'message' => 'Producto encontrado',
+                'data' => $this->formatProduct($product),
+            ];
+        }, 'Producto no encontrado');
     }
 
     public function store(Request $request): JsonResponse
@@ -183,6 +202,8 @@ class ProductController extends Controller
             if (strcasecmp(trim((string) $category), 'Plaxtilineas') === 0) {
                 $this->notificador->notificarProductoNuevo($product->id);
             }
+
+            $this->catalogCache->invalidate();
 
             return response()->json([
                 'success' => true,
@@ -274,6 +295,8 @@ class ProductController extends Controller
                 $this->recordStockEvent($product->id, (int) $updates['stock'], 'admin');
             }
 
+            $this->catalogCache->invalidate();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Producto actualizado exitosamente',
@@ -302,6 +325,7 @@ class ProductController extends Controller
         }
 
         $product->delete();
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
@@ -335,6 +359,7 @@ class ProductController extends Controller
             $product->update(['stock' => $newStock]);
             ProductVariant::where('product_id', $id)->update(['stock' => $newStock]);
             $this->recordStockEvent($id, $newStock, 'ecommerce');
+            $this->catalogCache->invalidate();
         }
 
         $product->refresh();
@@ -409,6 +434,7 @@ class ProductController extends Controller
         }
 
         $this->recordStockEvent($id, $result['stock'], 'ecommerce');
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
@@ -598,6 +624,8 @@ class ProductController extends Controller
                 'stock_nuevo' => $stock,
                 'origen' => $origen,
             ]);
+
+            Cache::forget('inventory:max_id');
 
             if (random_int(1, 50) === 1) {
                 InventoryEvent::where('creado_at', '<', now()->subHours(24))->delete();

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\InventoryEvent;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -16,7 +17,7 @@ class InventoryController extends Controller
     public function changes(Request $request): JsonResponse
     {
         try {
-            $maxId = (int) (InventoryEvent::max('id') ?? 0);
+            $maxId = $this->getCachedMaxEventId();
             $sinceRaw = $request->query('since_id');
 
             if ($sinceRaw === null || $sinceRaw === '' || !ctype_digit((string) $sinceRaw)) {
@@ -102,7 +103,7 @@ class InventoryController extends Controller
 
             try {
                 if ($lastEventId === 0) {
-                    $lastEventId = (int) (InventoryEvent::max('id') ?? 0);
+                    $lastEventId = $this->getCachedMaxEventId();
                 }
             } catch (\Throwable) {
                 echo "event: error\ndata: " . json_encode(['message' => 'Tabla de eventos no disponible']) . "\n\n";
@@ -125,23 +126,30 @@ class InventoryController extends Controller
                 }
 
                 try {
-                    $events = InventoryEvent::where('id', '>', $lastEventId)
-                        ->orderBy('id')
-                        ->limit(50)
-                        ->get();
+                    $maxId = $this->getCachedMaxEventId();
+                    $events = $maxId > $lastEventId
+                        ? Cache::remember("inventory:events:since:{$lastEventId}", 3, function () use ($lastEventId) {
+                            return InventoryEvent::where('id', '>', $lastEventId)
+                                ->orderBy('id')
+                                ->limit(50)
+                                ->get()
+                                ->map(fn ($ev) => [
+                                    'id' => (int) $ev->id,
+                                    'producto_id' => (int) $ev->producto_id,
+                                    'stock_nuevo' => (int) $ev->stock_nuevo,
+                                    'origen' => $ev->origen,
+                                    'creado_at' => $ev->creado_at,
+                                ])
+                                ->all();
+                        })
+                        : [];
 
-                    if ($events->isNotEmpty()) {
+                    if (! empty($events)) {
                         foreach ($events as $ev) {
-                            $lastEventId = (int) $ev->id;
+                            $lastEventId = $ev['id'];
                             echo "id: {$lastEventId}\n";
                             echo "event: stock_update\n";
-                            echo 'data: ' . json_encode([
-                                'id' => (int) $ev->id,
-                                'producto_id' => (int) $ev->producto_id,
-                                'stock_nuevo' => (int) $ev->stock_nuevo,
-                                'origen' => $ev->origen,
-                                'creado_at' => $ev->creado_at,
-                            ]) . "\n\n";
+                            echo 'data: ' . json_encode($ev) . "\n\n";
                         }
                         @flush();
                     } else {
@@ -160,6 +168,11 @@ class InventoryController extends Controller
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    private function getCachedMaxEventId(): int
+    {
+        return (int) Cache::remember('inventory:max_id', 5, fn () => (int) (InventoryEvent::max('id') ?? 0));
     }
 
     private function respond(array $data): JsonResponse

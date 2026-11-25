@@ -5,29 +5,37 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\Subcategory;
+use App\Services\CatalogCacheService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class CategoryController extends Controller
 {
+    public function __construct(private CatalogCacheService $catalogCache) {}
+
     public function index(Request $request): JsonResponse
     {
         $brand = $request->query('brand') ?? $request->query('linea');
+        $suffix = empty($brand)
+            ? 'categories_all'
+            : 'categories_brand_' . sha1(mb_strtolower((string) $brand));
 
-        $query = Category::with('subcategories')->orderBy('name');
+        return $this->catalogCache->respond($request, $suffix, function () use ($brand) {
+            $query = Category::with('subcategories')->orderBy('name');
 
-        if (!empty($brand)) {
-            $escaped = addcslashes((string) $brand, '%_\\');
-            $query->where(function ($q) use ($brand, $escaped) {
-                $q->where('brand', $brand)
-                  ->orWhere('brand', 'LIKE', "%{$escaped}%");
-            });
-        }
+            if (!empty($brand)) {
+                $escaped = addcslashes((string) $brand, '%_\\');
+                $query->where(function ($q) use ($brand, $escaped) {
+                    $q->where('brand', $brand)
+                      ->orWhere('brand', 'LIKE', "%{$escaped}%");
+                });
+            }
 
-        return response()->json([
-            'success' => true,
-            'data' => $query->get(),
-        ]);
+            return [
+                'success' => true,
+                'data' => $query->get()->toArray(),
+            ];
+        });
     }
 
     public function store(Request $request): JsonResponse
@@ -46,6 +54,8 @@ class CategoryController extends Controller
             'name' => $name,
             'brand' => $brand,
         ]);
+
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
@@ -80,6 +90,7 @@ class CategoryController extends Controller
             $category->brand = $request->input('brand');
         }
         $category->save();
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
@@ -90,6 +101,7 @@ class CategoryController extends Controller
     public function destroy(int $id): JsonResponse
     {
         Category::where('id', $id)->delete();
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
@@ -97,16 +109,19 @@ class CategoryController extends Controller
         ]);
     }
 
-    public function subcategories(int $id): JsonResponse
+    public function subcategories(Request $request, int $id): JsonResponse
     {
-        $subcategories = Subcategory::where('category_id', $id)
-            ->orderBy('name')
-            ->get();
+        return $this->catalogCache->respond($request, "subcategories_cat_{$id}", function () use ($id) {
+            $subcategories = Subcategory::where('category_id', $id)
+                ->orderBy('name')
+                ->get()
+                ->toArray();
 
-        return response()->json([
-            'success' => true,
-            'data' => $subcategories,
-        ]);
+            return [
+                'success' => true,
+                'data' => $subcategories,
+            ];
+        });
     }
 
     public function storeSubcategory(Request $request): JsonResponse
@@ -126,6 +141,8 @@ class CategoryController extends Controller
             'name' => $name,
         ]);
 
+        $this->catalogCache->invalidate();
+
         return response()->json([
             'success' => true,
             'message' => 'Subcategoría creada',
@@ -144,6 +161,7 @@ class CategoryController extends Controller
         }
 
         Subcategory::where('id', $id)->update(['name' => $name]);
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
@@ -154,6 +172,7 @@ class CategoryController extends Controller
     public function destroySubcategory(int $id): JsonResponse
     {
         Subcategory::where('id', $id)->delete();
+        $this->catalogCache->invalidate();
 
         return response()->json([
             'success' => true,
