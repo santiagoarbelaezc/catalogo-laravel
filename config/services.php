@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'atalaya' => [
+        'token' => env('ATALAYA_HEALTH_TOKEN', ''),
+    ],
+
 ];

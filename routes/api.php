@@ -4,16 +4,13 @@ use App\Http\Controllers\Api\AiController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BackupController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\InventoryController;
 use App\Http\Controllers\Api\ProductController;
 use Illuminate\Support\Facades\Route;
 
-// Healthcheck (sin DB)
-Route::get('/health', fn () => response()->json([
-    'success' => true,
-    'status' => 'OK',
-    'message' => 'API Laravel funcionando correctamente',
-]));
+// Healthcheck Atalaya (protegido por Bearer token, sin sesión)
+Route::get('/health', HealthController::class);
 
 // Auth públicas
 Route::post('/auth/login', [AuthController::class, 'login']);

@@ -169,7 +169,7 @@ jobs:
         run: |
           sleep 3
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://catalogoplaxtilineas.com/api/health || echo "000")
-          if [ "$RESPONSE" = "200" ]; then
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "401" ]; then
             echo "✅ API pública responde correctamente (HTTP $RESPONSE)"
           else
             echo "⚠️ La API pública devolvió HTTP $RESPONSE."
