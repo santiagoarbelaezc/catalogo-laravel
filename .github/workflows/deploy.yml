@@ -1,0 +1,128 @@
+name: 🚀 Deploy Backend Laravel → Hostinger
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:   # permite disparar manualmente desde GitHub UI
+
+env:
+  DEPLOY_PATH: /home/u870397049/domains/catalogoplaxtilineas.com/backend
+
+jobs:
+  deploy:
+    name: Deploy to Hostinger (SSH + rsync)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ─────────────────────────────────────────────
+      # 1. Checkout del código
+      # ─────────────────────────────────────────────
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────
+      # 2. Validar sintaxis PHP antes de desplegar
+      # ─────────────────────────────────────────────
+      - name: 🐘 Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+
+      - name: 🔍 Validar sintaxis PHP
+        run: |
+          find app config routes -name "*.php" | xargs -P4 -I{} php -l {} | grep -v "No syntax errors" | tee /tmp/php_errors.txt
+          if [ -s /tmp/php_errors.txt ]; then
+            echo "❌ Errores de sintaxis PHP detectados"
+            exit 1
+          fi
+          echo "✅ Sintaxis PHP OK"
+
+      # ─────────────────────────────────────────────
+      # 3. Configurar SSH
+      # ─────────────────────────────────────────────
+      - name: 🔑 Configurar SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Escribir clave privada desde secrets
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          # Registrar host conocido (evita prompt interactivo)
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      # ─────────────────────────────────────────────
+      # 4. Sincronizar archivos con rsync
+      #    Se excluyen: .env, vendor/, storage/, bootstrap/cache/
+      #    para no sobreescribir datos del servidor
+      # ─────────────────────────────────────────────
+      - name: 📤 Sincronizar archivos al servidor
+        run: |
+          rsync -avz --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.env' \
+            --exclude='vendor/' \
+            --exclude='storage/logs/' \
+            --exclude='storage/framework/cache/' \
+            --exclude='storage/framework/sessions/' \
+            --exclude='storage/framework/views/' \
+            --exclude='bootstrap/cache/' \
+            --exclude='*.log' \
+            --exclude='node_modules/' \
+            -e "ssh -p ${{ secrets.SSH_PORT }} -i ~/.ssh/id_ed25519" \
+            ./ \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ env.DEPLOY_PATH }}/
+
+      # ─────────────────────────────────────────────
+      # 5. Post-deploy en el servidor:
+      #    composer install → config:cache → route:cache → migrate
+      # ─────────────────────────────────────────────
+      - name: ⚙️ Comandos post-deploy en servidor
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+          script: |
+            set -e
+            cd ${{ env.DEPLOY_PATH }}
+
+            echo "📦 Instalando dependencias Composer (producción)..."
+            composer install --no-dev --optimize-autoloader --no-interaction
+
+            echo "⚡ Cacheando configuración, rutas y vistas..."
+            php artisan config:clear
+            php artisan config:cache
+            php artisan route:cache
+            php artisan view:cache
+
+            echo "🗄️ Ejecutando migraciones pendientes..."
+            php artisan migrate --force
+
+            echo "🔒 Ajustando permisos..."
+            chmod -R 775 storage bootstrap/cache
+            chmod 644 .env 2>/dev/null || true
+
+            echo "✅ Deploy completado exitosamente"
+
+      # ─────────────────────────────────────────────
+      # 6. Verificar que la API responde
+      # ─────────────────────────────────────────────
+      - name: 🌐 Health check de la API
+        run: |
+          sleep 5  # dar tiempo al servidor para reiniciar procesos
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://catalogoplaxtilineas.com/api/health)
+          if [ "$RESPONSE" = "200" ]; then
+            echo "✅ API responde correctamente (HTTP $RESPONSE)"
+          else
+            echo "⚠️ API retornó HTTP $RESPONSE — revisar logs en el servidor"
+            exit 1
+          fi

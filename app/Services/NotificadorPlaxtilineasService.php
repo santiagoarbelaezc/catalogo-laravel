@@ -11,13 +11,13 @@ class NotificadorPlaxtilineasService
     public function notificarProductoNuevo(int $productId): array
     {
         try {
-            $enabled = filter_var(env('PLAXTILINEAS_NOTIFY_ENABLED', false), FILTER_VALIDATE_BOOLEAN);
+            $enabled = (bool) config('catalogo.notificador.enabled', false);
             if (!$enabled) {
                 return ['sent' => false, 'reason' => 'disabled'];
             }
 
-            $baseUrl = rtrim((string) env('PLAXTILINEAS_BACKEND_URL', ''), '/');
-            $secret = trim((string) env('PLAXTILINEAS_WEBHOOK_SECRET', ''));
+            $baseUrl = rtrim((string) config('catalogo.notificador.backend_url', ''), '/');
+            $secret = trim((string) config('catalogo.notificador.webhook_secret', ''));
 
             if ($baseUrl === '' || $secret === '') {
                 Log::warning('NotificadorPlaxtilineas: falta configurar URL o SECRET', ['producto_id' => $productId]);

@@ -16,7 +16,7 @@ class BackupController extends Controller
 
     public function run(Request $request): JsonResponse
     {
-        $expectedToken = (string) env('BACKUP_SECRET_TOKEN', '');
+        $expectedToken = (string) config('catalogo.backup.secret_token', '');
         $providedToken = (string) $request->query('token', '');
 
         if ($expectedToken === '' || !hash_equals($expectedToken, $providedToken)) {

@@ -14,9 +14,9 @@ class CloudinaryService
 
     public function __construct()
     {
-        $this->cloudName = (string) env('CLOUDINARY_CLOUD_NAME', '');
-        $this->apiKey = (string) env('CLOUDINARY_API_KEY', '');
-        $this->apiSecret = (string) env('CLOUDINARY_API_SECRET', '');
+        $this->cloudName = (string) config('catalogo.cloudinary.cloud_name', '');
+        $this->apiKey = (string) config('catalogo.cloudinary.api_key', '');
+        $this->apiSecret = (string) config('catalogo.cloudinary.api_secret', '');
     }
 
     public function uploadImage(UploadedFile $file, string $folder = 'catalogo_plaxtilineas'): array
@@ -68,9 +68,9 @@ class CloudinaryService
 
     public function uploadRawFile(string $filePath, string $folder = 'backups/catalogo_db', bool $useSecondary = false): array
     {
-        $cloudName = $useSecondary ? (string) env('CLOUDINARY_BACKUP2_CLOUD_NAME', '') : $this->cloudName;
-        $apiKey = $useSecondary ? (string) env('CLOUDINARY_BACKUP2_API_KEY', '') : $this->apiKey;
-        $apiSecret = $useSecondary ? (string) env('CLOUDINARY_BACKUP2_API_SECRET', '') : $this->apiSecret;
+        $cloudName = $useSecondary ? (string) config('catalogo.cloudinary.backup2_cloud_name', '') : $this->cloudName;
+        $apiKey = $useSecondary ? (string) config('catalogo.cloudinary.backup2_api_key', '') : $this->apiKey;
+        $apiSecret = $useSecondary ? (string) config('catalogo.cloudinary.backup2_api_secret', '') : $this->apiSecret;
 
         if ($cloudName === '' || $apiKey === '' || $apiSecret === '') {
             return ['success' => false, 'error' => 'Credenciales Cloudinary no configuradas'];

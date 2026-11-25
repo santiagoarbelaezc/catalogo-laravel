@@ -11,7 +11,7 @@ class JwtService
 
     public function __construct()
     {
-        $this->secret = trim((string) env('JWT_SECRET', ''));
+        $this->secret = trim((string) config('catalogo.jwt.secret', ''));
     }
 
     public function generateToken(User|array $user, int $ttlSeconds = 86400): string

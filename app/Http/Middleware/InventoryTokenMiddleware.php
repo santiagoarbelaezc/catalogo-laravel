@@ -11,7 +11,7 @@ class InventoryTokenMiddleware
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $expectedToken = trim((string) env('INVENTORY_SYNC_TOKEN', ''));
+        $expectedToken = trim((string) config('catalogo.inventory.sync_token', ''));
 
         if ($expectedToken === '') {
             Log::error('INVENTORY_SYNC_TOKEN no está configurado');

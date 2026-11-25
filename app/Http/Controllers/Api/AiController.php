@@ -39,7 +39,7 @@ class AiController extends Controller
             return response()->json(['success' => false, 'message' => 'El nombre del producto es requerido.'], 400);
         }
 
-        $apiKey = (string) env('GROQ_API_KEY_DESC', '');
+        $apiKey = (string) config('catalogo.groq.key_desc', '');
         if ($apiKey === '') {
             return response()->json(['success' => false, 'message' => 'La API Key de descripción no está configurada.'], 500);
         }
@@ -70,7 +70,7 @@ class AiController extends Controller
             return response()->json(['success' => false, 'message' => 'El nombre del producto es requerido.'], 400);
         }
 
-        $apiKey = (string) env('GROQ_API_KEY_SUGGEST', '');
+        $apiKey = (string) config('catalogo.groq.key_suggest', '');
         if ($apiKey === '') {
             return response()->json(['success' => false, 'message' => 'La API Key de sugerencia no está configurada.'], 500);
         }
@@ -145,7 +145,7 @@ class AiController extends Controller
         $rawVariants = $request->input('variants');
         $variants = $rawVariants ? (is_string($rawVariants) ? json_decode($rawVariants, true) : $rawVariants) : [];
 
-        $apiKey = (string) (env('GROQ_API_KEY_SUGGEST') ?: env('GROQ_API_KEY_DESC'));
+        $apiKey = (string) (config('catalogo.groq.key_suggest') ?: config('catalogo.groq.key_desc'));
         $prefix = strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $category ?: 'PLX'), 0, 3) ?: 'PLX');
 
         if ($apiKey === '') {
