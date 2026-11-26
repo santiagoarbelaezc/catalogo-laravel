@@ -18,7 +18,7 @@ class InventoryController extends Controller
     {
         try {
             $maxId = $this->getCachedMaxEventId();
-            $sinceRaw = $request->query('since_id');
+            $sinceRaw = $request->query('since_id') ?? $request->query('desde');
 
             if ($sinceRaw === null || $sinceRaw === '' || !ctype_digit((string) $sinceRaw)) {
                 return $this->respond([
@@ -52,33 +52,41 @@ class InventoryController extends Controller
                 ]);
             }
 
-            $rows = InventoryEvent::where('id', '>', $sinceId)
-                ->orderBy('id')
-                ->limit(self::MAX_EVENTS + 1)
-                ->get();
+            $payload = Cache::remember(
+                "inventory:changes:since:{$sinceId}:max:{$maxId}",
+                60,
+                function () use ($sinceId) {
+                    $rows = InventoryEvent::where('id', '>', $sinceId)
+                        ->orderBy('id')
+                        ->limit(self::MAX_EVENTS + 1)
+                        ->get();
 
-            $hasMore = $rows->count() > self::MAX_EVENTS;
-            if ($hasMore) {
-                $rows->pop();
-            }
+                    $hasMore = $rows->count() > self::MAX_EVENTS;
+                    if ($hasMore) {
+                        $rows->pop();
+                    }
 
-            $events = $rows->map(fn ($r) => [
-                'id' => (int) $r->id,
-                'producto_id' => (int) $r->producto_id,
-                'stock_nuevo' => (int) $r->stock_nuevo,
-                'origen' => $r->origen,
-                'creado_at' => $r->creado_at,
-            ])->values()->all();
+                    $events = $rows->map(fn ($r) => [
+                        'id' => (int) $r->id,
+                        'producto_id' => (int) $r->producto_id,
+                        'stock_nuevo' => (int) $r->stock_nuevo,
+                        'origen' => $r->origen,
+                        'creado_at' => $r->creado_at,
+                    ])->values()->all();
 
-            $lastId = !empty($events) ? $events[count($events) - 1]['id'] : $sinceId;
+                    $lastId = !empty($events) ? $events[count($events) - 1]['id'] : $sinceId;
 
-            return $this->respond([
-                'enabled' => true,
-                'reset' => false,
-                'last_id' => $lastId,
-                'events' => $events,
-                'has_more' => $hasMore,
-            ]);
+                    return [
+                        'enabled' => true,
+                        'reset' => false,
+                        'last_id' => $lastId,
+                        'events' => $events,
+                        'has_more' => $hasMore,
+                    ];
+                }
+            );
+
+            return $this->respond($payload);
         } catch (\Throwable $e) {
             Log::warning('InventoryController::changes fallback', ['error' => $e->getMessage()]);
             return $this->respond([
@@ -172,7 +180,7 @@ class InventoryController extends Controller
 
     private function getCachedMaxEventId(): int
     {
-        return (int) Cache::remember('inventory:max_id', 5, fn () => (int) (InventoryEvent::max('id') ?? 0));
+        return (int) Cache::remember('inventory:max_id', 300, fn () => (int) (InventoryEvent::max('id') ?? 0));
     }
 
     private function respond(array $data): JsonResponse

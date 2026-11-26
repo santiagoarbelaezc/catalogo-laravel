@@ -377,6 +377,10 @@ class ProductController extends Controller
 
     public function adjustInventoryStock(Request $request, int $id): JsonResponse
     {
+        $startedAt = microtime(true);
+        $requestId = (string) ($request->header('X-Request-Id') ?: Str::uuid());
+        $idempotencyKey = trim((string) ($request->header('X-Idempotency-Key') ?: $request->input('idempotency_key', '')));
+
         if ($id <= 0) {
             return response()->json(['success' => false, 'message' => 'El ID debe ser un número entero positivo'], 422);
         }
@@ -388,40 +392,90 @@ class ProductController extends Controller
 
         $delta = (int) $delta;
 
+        Log::info('[CATALOGO_STOCK] Solicitud de ajuste de stock recibida', [
+            'request_id' => $requestId,
+            'idempotency_key' => $idempotencyKey !== '' ? $idempotencyKey : null,
+            'producto_id' => $id,
+            'delta' => $delta,
+            'ip' => $request->ip(),
+            'origin' => $request->header('Origin'),
+        ]);
+
+        // Protección de idempotencia (10 min): evita aplicar dos veces la misma operación
+        if ($idempotencyKey !== '') {
+            $cachedPayload = \Illuminate\Support\Facades\Cache::get("stock_idemp:{$idempotencyKey}");
+            if (is_array($cachedPayload)) {
+                Log::warning('[CATALOGO_STOCK] Ajuste duplicado bloqueado por idempotency_key', [
+                    'request_id' => $requestId,
+                    'idempotency_key' => $idempotencyKey,
+                    'producto_id' => $id,
+                    'delta' => $delta,
+                ]);
+
+                return response()->json(array_merge($cachedPayload, ['idempotent_replay' => true]), 200);
+            }
+        }
+
         $result = DB::transaction(function () use ($id, $delta) {
-            $affected = DB::table('products')
+            $beforeRow = DB::table('products')
                 ->where('id', $id)
                 ->whereNull('deleted_at')
-                ->whereRaw('stock + ? >= 0', [$delta])
-                ->update(['stock' => DB::raw("stock + ({$delta})"), 'updated_at' => now()]);
+                ->lockForUpdate()
+                ->first(['id', 'stock']);
 
-            if ($affected === 0) {
-                $product = Product::find($id);
-                if (!$product) {
-                    return ['status' => 404];
-                }
+            if (!$beforeRow) {
+                return ['status' => 404];
+            }
 
+            $stockAntes = (int) ($beforeRow->stock ?? 0);
+            $stockDespues = $stockAntes + $delta;
+
+            if ($stockDespues < 0) {
                 return [
                     'status' => 409,
-                    'stock' => (int) $product->stock,
+                    'stock' => $stockAntes,
                 ];
             }
 
-            $product = Product::find($id);
-            ProductVariant::where('product_id', $id)->update(['stock' => (int) $product->stock]);
+            DB::table('products')
+                ->where('id', $id)
+                ->whereNull('deleted_at')
+                ->update(['stock' => $stockDespues, 'updated_at' => now()]);
+
+            ProductVariant::where('product_id', $id)->update(['stock' => $stockDespues]);
 
             return [
                 'status' => 200,
-                'stock' => (int) $product->stock,
-                'updated_at' => $product->updated_at,
+                'stock_antes' => $stockAntes,
+                'stock' => $stockDespues,
+                'updated_at' => now(),
             ];
         });
 
+        $elapsedMs = (int) round((microtime(true) - $startedAt) * 1000);
+
         if ($result['status'] === 404) {
+            Log::warning('[CATALOGO_STOCK] Producto no encontrado para ajuste', [
+                'request_id' => $requestId,
+                'idempotency_key' => $idempotencyKey !== '' ? $idempotencyKey : null,
+                'producto_id' => $id,
+                'delta' => $delta,
+                'duracion_ms' => $elapsedMs,
+            ]);
+
             return response()->json(['success' => false, 'message' => 'Producto no encontrado'], 404);
         }
 
         if ($result['status'] === 409) {
+            Log::warning('[CATALOGO_STOCK] Stock insuficiente para ajuste', [
+                'request_id' => $requestId,
+                'idempotency_key' => $idempotencyKey !== '' ? $idempotencyKey : null,
+                'producto_id' => $id,
+                'delta' => $delta,
+                'stock_actual' => $result['stock'],
+                'duracion_ms' => $elapsedMs,
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Stock insuficiente para realizar el ajuste',
@@ -436,16 +490,33 @@ class ProductController extends Controller
         $this->recordStockEvent($id, $result['stock'], 'ecommerce');
         $this->catalogCache->invalidate();
 
-        return response()->json([
+        $responsePayload = [
             'success' => true,
             'message' => 'Stock ajustado',
             'data' => [
                 'product_id' => $id,
+                'stock_antes' => $result['stock_antes'],
                 'stock' => $result['stock'],
                 'delta' => $delta,
                 'updated_at' => $result['updated_at'],
             ],
+        ];
+
+        if ($idempotencyKey !== '') {
+            \Illuminate\Support\Facades\Cache::put("stock_idemp:{$idempotencyKey}", $responsePayload, now()->addMinutes(10));
+        }
+
+        Log::info('[CATALOGO_STOCK] Ajuste de stock aplicado correctamente', [
+            'request_id' => $requestId,
+            'idempotency_key' => $idempotencyKey !== '' ? $idempotencyKey : null,
+            'producto_id' => $id,
+            'delta' => $delta,
+            'stock_antes' => $result['stock_antes'],
+            'stock_despues' => $result['stock'],
+            'duracion_ms' => (int) round((microtime(true) - $startedAt) * 1000),
         ]);
+
+        return response()->json($responsePayload);
     }
 
     private function formatProduct(Product $product): array
@@ -619,13 +690,13 @@ class ProductController extends Controller
     private function recordStockEvent(int $productId, int $stock, string $origen): void
     {
         try {
-            InventoryEvent::create([
+            $event = InventoryEvent::create([
                 'producto_id' => $productId,
                 'stock_nuevo' => $stock,
                 'origen' => $origen,
             ]);
 
-            Cache::forget('inventory:max_id');
+            Cache::put('inventory:max_id', (int) $event->id, 300);
 
             if (random_int(1, 50) === 1) {
                 InventoryEvent::where('creado_at', '<', now()->subHours(24))->delete();

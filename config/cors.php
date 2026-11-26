@@ -9,6 +9,7 @@ return [
         'https://plaxtilineas.com',
         'https://www.plaxtilineas.com',
         'http://localhost:4200',
+        'http://localhost:4201',
         'http://localhost:3000',
         'https://catalogoplaxtilineas.com',
         'https://www.catalogoplaxtilineas.com',
@@ -26,6 +27,7 @@ return [
         'Origin',
         'X-Requested-With',
         'X-Skip-Error-Toast',
+        'Cache-Control',
     ],
 
     'exposed_headers' => [],
